@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 
-const API = 'http://localhost:4001/api';
+const API = process.env.REACT_APP_API_URL || '';
 
 const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:ital,wght@0,300;0,400;1,300&display=swap');
@@ -25,6 +26,7 @@ const styles = `
   input[type="file"] { display: none; }
   .file-label { display: flex; align-items: center; gap: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; cursor: pointer; transition: border-color 0.2s; font-size: 14px; }
   .file-label:hover { border-color: var(--accent); }
+  .preview-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 10px; font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); max-height: 120px; overflow-y: auto; }
   .btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 28px; border-radius: 10px; font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 700; cursor: pointer; border: none; transition: all 0.2s; letter-spacing: 0.5px; }
   .btn-primary { background: linear-gradient(135deg, var(--accent), #9333ea); color: white; width: 100%; justify-content: center; }
   .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(124,58,237,0.4); }
@@ -43,43 +45,64 @@ const styles = `
   .status-Finished { background: rgba(16,185,129,0.15); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
   .toast { position: fixed; bottom: 24px; right: 24px; background: var(--success); color: white; padding: 14px 20px; border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 100; }
   .empty { text-align: center; padding: 48px; color: var(--muted); font-family: 'DM Mono', monospace; font-size: 13px; }
+  .row-count { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--success); margin-top: 6px; }
 `;
 
 export default function App() {
   const [clientName, setClientName] = useState('');
   const [file, setFile] = useState(null);
+  const [parsedRows, setParsedRows] = useState(null);
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState('');
 
-  useEffect(() => { fetchTickets(); const interval = setInterval(fetchTickets, 5000); return () => clearInterval(interval); }, []);
+  useEffect(() => { fetchTickets(); const i = setInterval(fetchTickets, 5000); return () => clearInterval(i); }, []);
 
   async function fetchTickets() {
-    try {
-      const res = await fetch(`${API}/tickets`);
-      const data = await res.json();
-      setTickets([...data].reverse());
-    } catch(e) {}
+    try { const r = await fetch(`${API}/api/tickets`); setTickets((await r.json()).reverse()); } catch {}
+  }
+
+  function handleFile(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setFile(f);
+    // Parse Excel locally in browser — no heavy lifting on server!
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const wb = XLSX.read(evt.target.result, { type: 'binary' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+      setParsedRows(rows);
+    };
+    reader.readAsBinaryString(f);
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!clientName || !file) return;
+    if (!clientName || !parsedRows) return;
     setLoading(true);
-    const form = new FormData();
-    form.append('clientName', clientName);
-    form.append('dealsheet', file);
-    await fetch(`${API}/upload`, { method: 'POST', body: form });
-    setClientName(''); setFile(null); setLoading(false);
-    setToast('Dealsheet uploaded!'); setTimeout(() => setToast(''), 3000);
-    fetchTickets();
+    try {
+      // Send JSON instead of file — much faster!
+      const res = await fetch(`${API}/api/upload-json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientName, filename: file?.name || 'dealsheet.xlsx', rows: parsedRows })
+      });
+      await res.json();
+      setClientName(''); setFile(null); setParsedRows(null);
+      setToast('Dealsheet uploaded!'); setTimeout(() => setToast(''), 3000);
+      fetchTickets();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+    setLoading(false);
   }
 
   return (
     <>
       <style>{styles}</style>
       <div className="app">
-        <div style={{marginBottom: 48}}>
+        <div style={{ marginBottom: 48 }}>
           <div className="logo">jami</div>
           <div className="tagline">dealsheet intake portal</div>
           <div className="divider" />
@@ -89,16 +112,19 @@ export default function App() {
           <form onSubmit={handleSubmit}>
             <div className="field">
               <label>Client Name</label>
-              <input type="text" placeholder="e.g. Nike, Adidas, Apple..." value={clientName} onChange={e => setClientName(e.target.value)} />
+              <input type="text" placeholder="e.g. Goldman Sachs, Nike..." value={clientName} onChange={e => setClientName(e.target.value)} />
             </div>
             <div className="field">
               <label>Dealsheet Excel</label>
               <label className="file-label" htmlFor="file-input">
                 <span>📎</span><span>{file ? file.name : 'Choose .xlsx or .csv file...'}</span>
               </label>
-              <input id="file-input" type="file" accept=".xlsx,.xls,.csv" onChange={e => setFile(e.target.files[0])} />
+              <input id="file-input" type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
+              {parsedRows && (
+                <div className="row-count">✅ Parsed {parsedRows.length} rows from Excel</div>
+              )}
             </div>
-            <button className="btn btn-primary" type="submit" disabled={loading || !clientName || !file}>
+            <button className="btn btn-primary" type="submit" disabled={loading || !clientName || !parsedRows}>
               {loading ? '⏳ Uploading...' : '🚀 Submit Dealsheet'}
             </button>
           </form>

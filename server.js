@@ -4,17 +4,20 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
-
+ 
 const app = express();
 const PORT = process.env.PORT || 4001;
-
+ 
 app.use(cors());
-app.use(express.json());
-
+app.use(express.json({ limit: '10mb' }));
+ 
+// In-memory storage
 let tickets = [];
-
-const upload = multer({ storage: multer.memoryStorage() });
-
+ 
+// Multer memory storage for file uploads
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+ 
+// Upload via Excel file
 app.post('/api/upload', upload.single('dealsheet'), (req, res) => {
   try {
     const { clientName } = req.body;
@@ -30,7 +33,20 @@ app.post('/api/upload', upload.single('dealsheet'), (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
+ 
+// Upload via JSON directly (faster for Render free tier)
+app.post('/api/upload-json', (req, res) => {
+  try {
+    const { clientName, filename, rows } = req.body;
+    if (!clientName || !rows) return res.status(400).json({ error: 'Missing fields' });
+    const ticket = { id: uuidv4(), clientName, filename: filename || 'dealsheet.xlsx', rows, status: 'New', createdAt: new Date().toISOString() };
+    tickets.push(ticket);
+    res.json({ success: true, ticket });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+ 
 app.get('/api/tickets', (req, res) => res.json(tickets));
 app.get('/api/tickets/:id', (req, res) => {
   const t = tickets.find(t => t.id === req.params.id);
@@ -43,7 +59,7 @@ app.patch('/api/tickets/:id/status', (req, res) => {
   tickets[idx].status = req.body.status;
   res.json(tickets[idx]);
 });
-
+ 
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'build')));
   app.get('*', (req, res) => {
@@ -52,5 +68,6 @@ if (process.env.NODE_ENV === 'production') {
     }
   });
 }
-
+ 
 app.listen(PORT, () => console.log(`Jami running on port ${PORT}`));
+ 
