@@ -4,21 +4,78 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
- 
+const { google } = require('googleapis');
+
 const app = express();
 const PORT = process.env.PORT || 4001;
- 
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
- 
+
 // In-memory storage
 let tickets = [];
- 
-// Multer memory storage for file uploads
+
+// Google Sheets setup
+const JAMI_SHEET_ID = process.env.JAMI_SHEET_ID || '1gJV6r7BcWdkslSmjW9v6QqxHHxFirGPlM-6Ykevqnkg';
+
+async function getSheetsClient() {
+  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT || '{}');
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets']
+  });
+  return google.sheets({ version: 'v4', auth });
+}
+
+async function appendToSheet(ticket) {
+  try {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: JAMI_SHEET_ID,
+      range: 'Sheet1!A:F',
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[
+          ticket.id,
+          ticket.clientName,
+          ticket.filename,
+          ticket.rows.length,
+          ticket.createdAt,
+          'New'
+        ]]
+      }
+    });
+  } catch (err) {
+    console.error('Google Sheets error:', err.message);
+  }
+}
+
+async function updateTicketStatus(ticketId, status) {
+  try {
+    const sheets = await getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: JAMI_SHEET_ID,
+      range: 'Sheet1!A:F'
+    });
+    const rows = res.data.values || [];
+    const rowIndex = rows.findIndex(r => r[0] === ticketId);
+    if (rowIndex === -1) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: JAMI_SHEET_ID,
+      range: `Sheet1!F${rowIndex + 1}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[status]] }
+    });
+  } catch (err) {
+    console.error('Google Sheets update error:', err.message);
+  }
+}
+
+// Multer memory storage
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
- 
+
 // Upload via Excel file
-app.post('/api/upload', upload.single('dealsheet'), (req, res) => {
+app.post('/api/upload', upload.single('dealsheet'), async (req, res) => {
   try {
     const { clientName } = req.body;
     const file = req.file;
@@ -28,38 +85,41 @@ app.post('/api/upload', upload.single('dealsheet'), (req, res) => {
     const rows = XLSX.utils.sheet_to_json(sheet);
     const ticket = { id: uuidv4(), clientName, filename: file.originalname, rows, status: 'New', createdAt: new Date().toISOString() };
     tickets.push(ticket);
+    await appendToSheet(ticket);
     res.json({ success: true, ticket });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
- 
-// Upload via JSON directly (faster for Render free tier)
-app.post('/api/upload-json', (req, res) => {
+
+// Upload via JSON
+app.post('/api/upload-json', async (req, res) => {
   try {
     const { clientName, filename, rows } = req.body;
     if (!clientName || !rows) return res.status(400).json({ error: 'Missing fields' });
     const ticket = { id: uuidv4(), clientName, filename: filename || 'dealsheet.xlsx', rows, status: 'New', createdAt: new Date().toISOString() };
     tickets.push(ticket);
+    await appendToSheet(ticket);
     res.json({ success: true, ticket });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
- 
+
 app.get('/api/tickets', (req, res) => res.json(tickets));
 app.get('/api/tickets/:id', (req, res) => {
   const t = tickets.find(t => t.id === req.params.id);
   if (!t) return res.status(404).json({ error: 'Not found' });
   res.json(t);
 });
-app.patch('/api/tickets/:id/status', (req, res) => {
+app.patch('/api/tickets/:id/status', async (req, res) => {
   const idx = tickets.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   tickets[idx].status = req.body.status;
+  await updateTicketStatus(req.params.id, req.body.status);
   res.json(tickets[idx]);
 });
- 
+
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'build')));
   app.get('*', (req, res) => {
@@ -68,6 +128,5 @@ if (process.env.NODE_ENV === 'production') {
     }
   });
 }
- 
+
 app.listen(PORT, () => console.log(`Jami running on port ${PORT}`));
- 
