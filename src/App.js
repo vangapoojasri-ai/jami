@@ -71,6 +71,20 @@ export default function App() {
     reader.onload = (evt) => {
       const wb = XLSX.read(evt.target.result, { type: 'binary' });
       const ws = wb.Sheets[wb.SheetNames[0]];
+      // Expand merged cells before parsing
+      const merges = ws['!merges'] || [];
+      merges.forEach(merge => {
+        const { s, e } = merge;
+        const topLeftAddr = XLSX.utils.encode_cell({ r: s.r, c: s.c });
+        const topLeftCell = ws[topLeftAddr];
+        if (!topLeftCell) return;
+        for (let r = s.r; r <= e.r; r++) {
+          for (let c = s.c; c <= e.c; c++) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            if (!ws[addr] || !ws[addr].v) ws[addr] = { ...topLeftCell };
+          }
+        }
+      });
       const rows = XLSX.utils.sheet_to_json(ws);
       setParsedRows(rows);
     };

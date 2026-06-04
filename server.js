@@ -72,6 +72,37 @@ async function updateTicketStatus(ticketId, status) {
   }
 }
 
+// ── Handle merged cells in Excel ──────────────────────────────────────────
+function expandMergedCells(sheet) {
+  const merges = sheet['!merges'] || [];
+  merges.forEach(merge => {
+    const { s, e } = merge;
+    // Get value from top-left cell of merge
+    const topLeftAddr = XLSX.utils.encode_cell({ r: s.r, c: s.c });
+    const topLeftCell = sheet[topLeftAddr];
+    if (!topLeftCell) return;
+    // Copy to all cells in merge range
+    for (let r = s.r; r <= e.r; r++) {
+      for (let c = s.c; c <= e.c; c++) {
+        const addr = XLSX.utils.encode_cell({ r, c });
+        if (!sheet[addr] || !sheet[addr].v) {
+          sheet[addr] = { ...topLeftCell };
+        }
+      }
+    }
+  });
+  return sheet;
+}
+
+function parseExcel(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  // Expand merged cells before parsing to JSON
+  expandMergedCells(sheet);
+  return XLSX.utils.sheet_to_json(sheet);
+}
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 app.post('/api/upload', upload.single('dealsheet'), async (req, res) => {
@@ -79,9 +110,7 @@ app.post('/api/upload', upload.single('dealsheet'), async (req, res) => {
     const { clientName } = req.body;
     const file = req.file;
     if (!file || !clientName) return res.status(400).json({ error: 'Missing fields' });
-    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(sheet);
+    const rows = parseExcel(file.buffer);
     const ticket = { id: uuidv4(), clientName, filename: file.originalname, rows, status: 'New', createdAt: new Date().toISOString() };
     tickets.push(ticket);
     await appendToSheet(ticket);
@@ -92,6 +121,20 @@ app.post('/api/upload', upload.single('dealsheet'), async (req, res) => {
 });
 
 app.post('/api/upload-json', async (req, res) => {
+  try {
+    const { clientName, filename, rows } = req.body;
+    if (!clientName || !rows) return res.status(400).json({ error: 'Missing fields' });
+    const ticket = { id: uuidv4(), clientName, filename: filename || 'dealsheet.xlsx', rows, status: 'New', createdAt: new Date().toISOString() };
+    tickets.push(ticket);
+    await appendToSheet(ticket);
+    res.json({ success: true, ticket });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload JSON with merged cell handling on client side
+app.post('/api/upload-excel-json', async (req, res) => {
   try {
     const { clientName, filename, rows } = req.body;
     if (!clientName || !rows) return res.status(400).json({ error: 'Missing fields' });
