@@ -12,16 +12,16 @@ const PORT = process.env.PORT || 4001;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// In-memory storage
 let tickets = [];
 
-// Google Sheets setup
 const JAMI_SHEET_ID = process.env.JAMI_SHEET_ID || '1gJV6r7BcWdkslSmjW9v6QqxHHxFirGPlM-6Ykevqnkg';
 
 async function getSheetsClient() {
-  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT || '{}');
   const auth = new google.auth.GoogleAuth({
-    credentials,
+    credentials: {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    },
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
   return google.sheets({ version: 'v4', auth });
@@ -45,6 +45,7 @@ async function appendToSheet(ticket) {
         ]]
       }
     });
+    console.log('✅ Written to Google Sheets!');
   } catch (err) {
     console.error('Google Sheets error:', err.message);
   }
@@ -71,10 +72,8 @@ async function updateTicketStatus(ticketId, status) {
   }
 }
 
-// Multer memory storage
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
-// Upload via Excel file
 app.post('/api/upload', upload.single('dealsheet'), async (req, res) => {
   try {
     const { clientName } = req.body;
@@ -92,7 +91,6 @@ app.post('/api/upload', upload.single('dealsheet'), async (req, res) => {
   }
 });
 
-// Upload via JSON
 app.post('/api/upload-json', async (req, res) => {
   try {
     const { clientName, filename, rows } = req.body;
